@@ -1,4 +1,4 @@
-/* nvd3 version 1.8.5-dev (https://github.com/novus/nvd3) 2017-02-15 */
+/* nvd3 version 1.8.5-dev (https://github.com/novus/nvd3) 2017-05-31 */
 (function(){
 
 // set up main nv object
@@ -1590,6 +1590,27 @@ nv.utils.arrayEquals = function (array1, array2) {
     }
     return true;
 };
+
+/*
+ Check if a point within an arc
+ */
+nv.utils.pointIsInArc = function(pt, ptData, d3Arc) {
+    // Center of the arc is assumed to be 0,0
+    // (pt.x, pt.y) are assumed to be relative to the center
+    var r1 = d3Arc.innerRadius()(ptData), // Note: Using the innerRadius
+      r2 = d3Arc.outerRadius()(ptData),
+      theta1 = d3Arc.startAngle()(ptData),
+      theta2 = d3Arc.endAngle()(ptData);
+
+    var dist = pt.x * pt.x + pt.y * pt.y,
+      angle = Math.atan2(pt.x, -pt.y); // Note: different coordinate system.
+
+    angle = (angle < 0) ? (angle + Math.PI * 2) : angle;
+
+    return (r1 * r1 <= dist) && (dist <= r2 * r2) &&
+      (theta1 <= angle) && (angle <= theta2);
+};
+
 nv.models.axis = function() {
     "use strict";
 
@@ -1614,6 +1635,7 @@ nv.models.axis = function() {
         , fontSize = undefined
         , duration = 250
         , dispatch = d3.dispatch('renderEnd')
+        , tickFormatMaxMin
         ;
     axis
         .scale(scale)
@@ -1698,7 +1720,8 @@ nv.models.axis = function() {
                             .attr('y', -axis.tickPadding())
                             .attr('text-anchor', 'middle')
                             .text(function(d,i) {
-                                var v = fmt(d);
+                                var formatter = tickFormatMaxMin || fmt;
+                                var v = formatter(d);
                                 return ('' + v).match('NaN') ? '' : v;
                             });
                         axisMaxMin.watchTransition(renderWatch, 'min-max top')
@@ -1715,7 +1738,7 @@ nv.models.axis = function() {
                     var rotateLabelsRule = '';
                     if (rotateLabels%360) {
                         //Reset transform on ticks so textHeight can be calculated correctly
-                        xTicks.attr('transform', ''); 
+                        xTicks.attr('transform', '');
                         //Calculate the longest xTick width
                         xTicks.each(function(d,i){
                             var box = this.getBoundingClientRect();
@@ -1773,7 +1796,8 @@ nv.models.axis = function() {
                             .attr('transform', rotateLabelsRule)
                             .style('text-anchor', rotateLabels ? (rotateLabels%360 > 0 ? 'start' : 'end') : 'middle')
                             .text(function(d,i) {
-                                var v = fmt(d);
+                                var formatter = tickFormatMaxMin || fmt;
+                                var v = formatter(d);
                                 return ('' + v).match('NaN') ? '' : v;
                             });
                         axisMaxMin.watchTransition(renderWatch, 'min-max bottom')
@@ -1808,7 +1832,8 @@ nv.models.axis = function() {
                             .attr('x', axis.tickPadding())
                             .style('text-anchor', 'start')
                             .text(function(d, i) {
-                                var v = fmt(d);
+                                var formatter = tickFormatMaxMin || fmt;
+                                var v = formatter(d);
                                 return ('' + v).match('NaN') ? '' : v;
                             });
                         axisMaxMin.watchTransition(renderWatch, 'min-max right')
@@ -1852,7 +1877,8 @@ nv.models.axis = function() {
                             .attr('x', -axis.tickPadding())
                             .attr('text-anchor', 'end')
                             .text(function(d,i) {
-                                var v = fmt(d);
+                                var formatter = tickFormatMaxMin || fmt;
+                                var v = formatter(d);
                                 return ('' + v).match('NaN') ? '' : v;
                             });
                         axisMaxMin.watchTransition(renderWatch, 'min-max right')
@@ -1923,9 +1949,9 @@ nv.models.axis = function() {
                     and the arithmetic trick below solves that.
                     */
                     return !parseFloat(Math.round(d * 100000) / 1000000) && (d !== undefined)
-                }) 
+                })
                 .classed('zero', true);
-            
+
             //store old scales for use in transitions on update
             scale0 = scale.copy();
 
@@ -1956,6 +1982,7 @@ nv.models.axis = function() {
         ticks:             {get: function(){return ticks;}, set: function(_){ticks=_;}},
         width:             {get: function(){return width;}, set: function(_){width=_;}},
         fontSize:          {get: function(){return fontSize;}, set: function(_){fontSize=_;}},
+        tickFormatMaxMin:  {get: function(){return tickFormatMaxMin;}, set: function(_){tickFormatMaxMin=_;}},
 
         // options that require extra logic in the setter
         margin: {get: function(){return margin;}, set: function(_){
@@ -3293,7 +3320,589 @@ nv.models.candlestickBar = function() {
     nv.utils.initOptions(chart);
     return chart;
 };
+nv.models.controlChart = function () {
+  "use strict";
 
+  //============================================================
+  // Public Variables with Default Settings
+  //------------------------------------------------------------
+
+  var margin = { top: 30, right: 20, bottom: 50, left: 60 },
+      color = nv.utils.defaultColor(),
+      width = null,
+      height = null,
+      showLegend = true,
+      noData = null,
+      yDomain1,
+      yDomain2,
+      getX = function (d) { return d.x },
+      getY = function (d) { return d.y },
+      interpolate = 'monotone',
+      useVoronoi = true,
+      interactiveLayer = nv.interactiveGuideline(),
+      useInteractiveGuideline = false,
+      legendRightAxisHint = ' (right axis)'
+       , controlLines = function (d) { return d.controlLines; }
+  ;
+
+  //============================================================
+  // Private Variables
+  //------------------------------------------------------------
+  var x = d3.scale.linear(),
+      yScale1 = d3.scale.linear(),
+      yScale2 = d3.scale.linear(),
+
+      lines1 = nv.models.line().yScale(yScale1),
+      lines2 = nv.models.line().yScale(yScale2),
+
+      xAxis = nv.models.axis().scale(x).orient('bottom').tickPadding(5),
+      yAxis1 = nv.models.axis().scale(yScale1).orient('left'),
+      yAxis2 = nv.models.axis().scale(yScale2).orient('right'),
+
+      legend = nv.models.legend().height(30),
+      tooltip = nv.models.tooltip(),
+      dispatch = d3.dispatch();
+
+  var charts = [lines1, lines2];
+
+  function chart(selection) {
+    selection.each(function (data) {
+      var container = d3.select(this),
+          that = this;
+      nv.utils.initSVG(container);
+
+      chart.update = function () { container.transition().call(chart); };
+      chart.container = this;
+
+      var availableWidth = nv.utils.availableWidth(width, container, margin),
+          availableHeight = nv.utils.availableHeight(height, container, margin);
+
+      var dataLines1 = data.filter(function (d) { return d.type == 'line' && d.yAxis == 1 });
+      var dataLines2 = data.filter(function (d) { return d.type == 'line' && d.yAxis == 2 });
+
+      // Display noData message if there's nothing to show.
+      if (!data || !data.length || !data.filter(function (d) { return d.values.length }).length) {
+        nv.utils.noData(chart, container);
+        return chart;
+      } else {
+        container.selectAll('.nv-noData').remove();
+      }
+
+      var series1 = data.filter(function (d) { return !d.disabled && d.yAxis == 1 })
+          .map(function (d) {
+            return d.values.map(function (d, i) {
+              return { x: getX(d), y: getY(d) }
+            })
+          });
+
+      var series2 = data.filter(function (d) { return !d.disabled && d.yAxis == 2 })
+          .map(function (d) {
+            return d.values.map(function (d, i) {
+              return { x: getX(d), y: getY(d) }
+            })
+          });
+
+      x.domain(d3.extent(d3.merge(series1.concat(series2)), function (d) { return getX(d) }))
+          .range([0, availableWidth]);
+
+      var wrap = container.selectAll('g.wrap.multiChart').data([data]);
+      var gEnter = wrap.enter().append('g').attr('class', 'wrap nvd3 multiChart').append('g');
+
+      gEnter.append('g').attr('class', 'nv-x nv-axis');
+      gEnter.append('g').attr('class', 'nv-y1 nv-axis');
+      gEnter.append('g').attr('class', 'nv-y2 nv-axis');
+      gEnter.append('g').attr('class', 'lines1Wrap');
+      gEnter.append('g').attr('class', 'lines2Wrap');
+      gEnter.append('g').attr('class', 'controls1Wrap');
+      gEnter.append('g').attr('class', 'controls2Wrap');
+      gEnter.append('g').attr('class', 'legendWrap');
+      gEnter.append('g').attr('class', 'nv-interactive');
+
+      var g = wrap.select('g');
+
+      var color_array = data.map(function (d, i) {
+        return data[i].color || color(d, i);
+      });
+
+      if (showLegend) {
+        var legendWidth = legend.align() ? availableWidth / 2 : availableWidth;
+        var legendXPosition = legend.align() ? legendWidth : 0;
+
+        legend.width(legendWidth);
+        legend.color(color_array);
+
+        g.select('.legendWrap')
+            .datum(data.map(function (series) {
+              series.originalKey = series.originalKey === undefined ? series.key : series.originalKey;
+              series.key = series.originalKey + (series.yAxis == 1 ? '' : legendRightAxisHint);
+              return series;
+            }))
+            .call(legend);
+
+        if (margin.top != legend.height()) {
+          margin.top = legend.height();
+          availableHeight = nv.utils.availableHeight(height, container, margin);
+        }
+
+        g.select('.legendWrap')
+            .attr('transform', 'translate(' + legendXPosition + ',' + (-margin.top) + ')');
+      }
+
+      lines1
+          .width(availableWidth)
+          .height(availableHeight)
+          .interpolate(interpolate)
+          .color(color_array.filter(function (d, i) { return !data[i].disabled && data[i].yAxis == 1 && data[i].type == 'line' }));
+      lines2
+          .width(availableWidth)
+          .height(availableHeight)
+          .interpolate(interpolate)
+          .color(color_array.filter(function (d, i) { return !data[i].disabled && data[i].yAxis == 2 && data[i].type == 'line' }));
+      g.attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+      var lines1Wrap = g.select('.lines1Wrap')
+          .datum(dataLines1.filter(function (d) { return !d.disabled }));
+      var lines2Wrap = g.select('.lines2Wrap')
+          .datum(dataLines2.filter(function (d) { return !d.disabled }));
+
+      var controls1 = dataLines1
+        .filter(function(data) {
+          return !data.disabled;
+        })
+        .map(function (a) {
+          return a.controlLines;
+        });
+      var extraValue1 = controls1.length ? [
+        {
+          x: 0,
+          y: Math.min.apply(null, controls1.map(function(control) {
+            return Math.floor(control[1].value * 100)/100;
+          }))
+        }] : [];
+      if (controls1.length === 3) {
+        extraValue1.push({
+          x: 0,
+          y: Math.max.apply(null, controls1.map(function(control) {
+            return Math.ceil(control[2].value * 100) / 100;
+          }))
+        });
+      }
+      var controls2 = dataLines2
+          .filter(function(data) {
+            return !data.disabled;
+          })
+          .map(function (a) {
+            return a.controlLines;
+          });
+
+      var extraValue2 = controls2.length ? [
+        {
+          x: 0,
+          y: Math.min.apply(null, controls2.map(function(control) {
+            return Math.floor(control[0].value * 100) / 100;
+          }))
+        }, {
+          x: 0,
+          y: Math.max.apply(null, controls2.map(function(control) {
+            return Math.ceil(control[4].value * 100) / 100;
+          }))
+        }] : [];
+
+  
+      yScale1.domain(yDomain1 || d3.extent(d3.merge(series1).concat(extraValue1), function (d) { return d.y }))
+          .range([0, availableHeight]);
+
+      yScale2.domain(yDomain2 || d3.extent(d3.merge(series2).concat(extraValue2), function (d) { return d.y }))
+          .range([0, availableHeight]);
+
+      lines1.yDomain(yScale1.domain());
+
+      lines2.yDomain(yScale2.domain());
+
+      if (dataLines1.length) { d3.transition(lines1Wrap).call(lines1); }
+      if (dataLines2.length) { d3.transition(lines2Wrap).call(lines2); }
+
+      var controlLineData1 = data.filter(function (d) {
+        return !d.disabled && !!controlLines(d) && (d.yAxis === 1);
+      });
+
+      var controlLines1Outer = g.select(".controls1Wrap").selectAll("g")
+        .data(controlLineData1, function(d) { return d.key; });
+      controlLines1Outer.enter().append("g");
+      var controlLines1 = controlLines1Outer.selectAll("line")
+        .data(function(d, i) {
+          return d.controlLines;
+        });
+      var controlLines1Labels = controlLines1Outer.selectAll("text")
+        .data(function (d, i) {
+          return d.controlLines;
+        });
+      //updateYAxis();
+      var getControlLineY1 = function (d) {
+        //If average lines go off the svg element, clamp them to the svg bounds.
+        var yVal = yScale1(d.value);
+        if (yVal < 0) return 0;
+        if (yVal > availableHeight) return availableHeight;
+        return yVal;
+      };
+
+      controlLines1.enter()
+        .append('line')
+        .style('stroke-width', 0.5)
+        .style('stroke-dasharray', '5,5')
+        .style('stroke', function (d, i) {
+          return lines1.color()(d, d.seriesIndex);
+        })
+        .style('opacity',0.5)
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getControlLineY1)
+          .attr('y2', getControlLineY1);
+      controlLines1
+        .attr('x', availableWidth)
+        .attr('y', getControlLineY1)
+
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getControlLineY1)
+          .attr('y2', getControlLineY1);
+      controlLines1.exit().remove();
+
+      controlLines1Labels.enter()
+        .append('text')
+        .attr('x', availableWidth)
+        .attr('y', getControlLineY1)
+        .text(function(d) {
+          return d.line;
+        });
+      controlLines1Labels
+        .attr('x', availableWidth)
+        .attr('y', getControlLineY1)
+        .text(function (d) {
+          return d.line;
+        });
+      controlLines1Labels.exit().remove();
+
+      var controlLineData2 = data.filter(function (d) {
+        return !d.disabled && !!controlLines(d) && (d.yAxis === 2);
+      });
+
+      var controlLines2 = g.select(".controls2Wrap").selectAll("line")
+          .data(controlLineData2, function (d) { return d.key; });
+
+      //updateYAxis();
+      var getControlLineY2 = function (d) {
+        //If average lines go off the svg element, clamp them to the svg bounds.
+        var yVal = yScale2(d.controlLines[2].value);
+        if (yVal < 0) return 0;
+        if (yVal > availableHeight) return availableHeight;
+        return yVal;
+      };
+
+      controlLines2.enter()
+        .append('line')
+        .style('stroke-width', 2)
+        .style('stroke-dasharray', '10,10')
+        .style('stroke', function (d, i) {
+          return lines1.color()(d, d.seriesIndex);
+        })
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getControlLineY2)
+          .attr('y2', getControlLineY2);
+      controlLines2
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getControlLineY2)
+          .attr('y2', getControlLineY2);
+      controlLines2.exit().remove();
+
+      xAxis
+          ._ticks(nv.utils.calcTicksX(availableWidth / 100, data))
+          .tickSize(-availableHeight, 0);
+
+      g.select('.nv-x.nv-axis')
+          .attr('transform', 'translate(0,' + availableHeight + ')');
+      d3.transition(g.select('.nv-x.nv-axis'))
+          .call(xAxis);
+
+      yAxis1
+          ._ticks(nv.utils.calcTicksY(availableHeight / 36, data))
+          .tickSize(-availableWidth, 0);
+
+
+      d3.transition(g.select('.nv-y1.nv-axis'))
+          .call(yAxis1);
+
+      yAxis2
+          ._ticks(nv.utils.calcTicksY(availableHeight / 36, data))
+          .tickSize(-availableWidth, 0);
+
+      d3.transition(g.select('.nv-y2.nv-axis'))
+          .call(yAxis2);
+
+      g.select('.nv-y1.nv-axis')
+          .classed('nv-disabled', series1.length ? false : true)
+          .attr('transform', 'translate(' + x.range()[0] + ',0)');
+
+      g.select('.nv-y2.nv-axis')
+          .classed('nv-disabled', series2.length ? false : true)
+          .attr('transform', 'translate(' + x.range()[1] + ',0)');
+
+      legend.dispatch.on('stateChange', function (newState) {
+        chart.update();
+      });
+
+      if (useInteractiveGuideline) {
+        interactiveLayer
+            .width(availableWidth)
+            .height(availableHeight)
+            .margin({ left: margin.left, top: margin.top })
+            .svgContainer(container)
+            .xScale(x);
+        wrap.select(".nv-interactive").call(interactiveLayer);
+      }
+
+      //============================================================
+      // Event Handling/Dispatching
+      //------------------------------------------------------------
+
+      function mouseover_line(evt) {
+        var yaxis = data[evt.seriesIndex].yAxis === 2 ? yAxis2 : yAxis1;
+        evt.value = evt.point.x;
+        evt.series = {
+          value: evt.point.y,
+          color: evt.point.color,
+          key: evt.series.key
+        };
+        tooltip
+            .duration(0)
+            .valueFormatter(function (d, i) {
+              return yaxis.tickFormat()(d, i);
+            })
+            .data(evt)
+            .hidden(false);
+      }
+
+      function mouseover_scatter(evt) {
+        var yaxis = data[evt.seriesIndex].yAxis === 2 ? yAxis2 : yAxis1;
+        evt.value = evt.point.x;
+        evt.series = {
+          value: evt.point.y,
+          color: evt.point.color,
+          key: evt.series.key
+        };
+        tooltip
+            .duration(100)
+            .valueFormatter(function (d, i) {
+              return yaxis.tickFormat()(d, i);
+            })
+            .data(evt)
+            .hidden(false);
+      }
+
+      function mouseover_stack(evt) {
+        var yaxis = data[evt.seriesIndex].yAxis === 2 ? yAxis2 : yAxis1;
+        evt.point['x'] = stack1.x()(evt.point);
+        evt.point['y'] = stack1.y()(evt.point);
+        tooltip
+            .duration(0)
+            .valueFormatter(function (d, i) {
+              return yaxis.tickFormat()(d, i);
+            })
+            .data(evt)
+            .hidden(false);
+      }
+
+      function mouseover_bar(evt) {
+        var yaxis = data[evt.data.series].yAxis === 2 ? yAxis2 : yAxis1;
+
+        evt.value = bars1.x()(evt.data);
+        evt['series'] = {
+          value: bars1.y()(evt.data),
+          color: evt.color,
+          key: evt.data.key
+        };
+        tooltip
+            .duration(0)
+            .valueFormatter(function (d, i) {
+              return yaxis.tickFormat()(d, i);
+            })
+            .data(evt)
+            .hidden(false);
+      }
+
+
+
+      function clearHighlights() {
+        for (var i = 0, il = charts.length; i < il; i++) {
+          var chart = charts[i];
+          try {
+            chart.clearHighlights();
+          } catch (e) { }
+        }
+      }
+
+      function highlightPoint(serieIndex, pointIndex, b) {
+        for (var i = 0, il = charts.length; i < il; i++) {
+          var chart = charts[i];
+          try {
+            chart.highlightPoint(serieIndex, pointIndex, b);
+          } catch (e) { }
+        }
+      }
+
+      if (useInteractiveGuideline) {
+        interactiveLayer.dispatch.on('elementMousemove', function (e) {
+          clearHighlights();
+          var singlePoint, pointIndex, pointXLocation, allData = [];
+          data
+          .filter(function (series, i) {
+            series.seriesIndex = i;
+            return !series.disabled;
+          })
+          .forEach(function (series, i) {
+            var extent = x.domain();
+            var currentValues = series.values.filter(function (d, i) {
+              return chart.x()(d, i) >= extent[0] && chart.x()(d, i) <= extent[1];
+            });
+
+            pointIndex = nv.interactiveBisect(currentValues, e.pointXValue, chart.x());
+            var point = currentValues[pointIndex];
+            var pointYValue = chart.y()(point, pointIndex);
+            if (pointYValue !== null) {
+              highlightPoint(i, pointIndex, true);
+            }
+            if (point === undefined) return;
+            if (singlePoint === undefined) singlePoint = point;
+            if (pointXLocation === undefined) pointXLocation = x(chart.x()(point, pointIndex));
+            allData.push({
+              key: series.key,
+              value: pointYValue,
+              color: color(series, series.seriesIndex),
+              data: point,
+              yAxis: series.yAxis == 2 ? yAxis2 : yAxis1,
+              controls: series.controls
+            });
+          });
+
+          interactiveLayer.tooltip
+          .valueFormatter(function (d, i) {
+            var yAxis = allData[i].yAxis;
+            return d === null ? "N/A" : allData[i].yAxis.tickFormat()(d);
+          }).headerFormatter(function (d, i) {
+            return xAxis.tickFormat()(d, i);
+          })
+          .data({
+            value: chart.x()(singlePoint, pointIndex),
+            index: pointIndex,
+            series: allData
+          })();
+
+          interactiveLayer.renderGuideLine(pointXLocation);
+        });
+
+        interactiveLayer.dispatch.on("elementMouseout", function (e) {
+          clearHighlights();
+        });
+      } else {
+        lines1.dispatch.on('elementMouseover.tooltip', mouseover_line);
+        lines2.dispatch.on('elementMouseover.tooltip', mouseover_line);
+        lines1.dispatch.on('elementMouseout.tooltip', function (evt) {
+          tooltip.hidden(true)
+        });
+        lines2.dispatch.on('elementMouseout.tooltip', function (evt) {
+          tooltip.hidden(true)
+        });
+
+      }
+    });
+
+    return chart;
+  }
+
+  //============================================================
+  // Global getters and setters
+  //------------------------------------------------------------
+
+  chart.dispatch = dispatch;
+  chart.legend = legend;
+  chart.lines1 = lines1;
+  chart.lines2 = lines2;
+  chart.xAxis = xAxis;
+  chart.yAxis1 = yAxis1;
+  chart.yAxis2 = yAxis2;
+  chart.tooltip = tooltip;
+  chart.interactiveLayer = interactiveLayer;
+
+  chart.options = nv.utils.optionsFunc.bind(chart);
+
+  chart._options = Object.create({}, {
+    // simple options, just get/set the necessary values
+    width: { get: function () { return width; }, set: function (_) { width = _; } },
+    height: { get: function () { return height; }, set: function (_) { height = _; } },
+    showLegend: { get: function () { return showLegend; }, set: function (_) { showLegend = _; } },
+    yDomain1: { get: function () { return yDomain1; }, set: function (_) { yDomain1 = _; } },
+    yDomain2: { get: function () { return yDomain2; }, set: function (_) { yDomain2 = _; } },
+    noData: { get: function () { return noData; }, set: function (_) { noData = _; } },
+    interpolate: { get: function () { return interpolate; }, set: function (_) { interpolate = _; } },
+    legendRightAxisHint: { get: function () { return legendRightAxisHint; }, set: function (_) { legendRightAxisHint = _; } },
+
+    // options that require extra logic in the setter
+    margin: {
+      get: function () { return margin; }, set: function (_) {
+        margin.top = _.top !== undefined ? _.top : margin.top;
+        margin.right = _.right !== undefined ? _.right : margin.right;
+        margin.bottom = _.bottom !== undefined ? _.bottom : margin.bottom;
+        margin.left = _.left !== undefined ? _.left : margin.left;
+      }
+    },
+    color: {
+      get: function () { return color; }, set: function (_) {
+        color = nv.utils.getColor(_);
+      }
+    },
+    x: {
+      get: function () { return getX; }, set: function (_) {
+        getX = _;
+        lines1.x(_);
+        lines2.x(_);
+      }
+    },
+    y: {
+      get: function () { return getY; }, set: function (_) {
+        getY = _;
+        lines1.y(_);
+        lines2.y(_);
+      }
+    },
+    useVoronoi: {
+      get: function () { return useVoronoi; }, set: function (_) {
+        useVoronoi = _;
+        lines1.useVoronoi(_);
+        lines2.useVoronoi(_);
+      }
+    },
+
+    useInteractiveGuideline: {
+      get: function () { return useInteractiveGuideline; }, set: function (_) {
+        useInteractiveGuideline = _;
+        if (useInteractiveGuideline) {
+          lines1.interactive(false);
+          lines1.useVoronoi(false);
+          lines2.interactive(false);
+          lines2.useVoronoi(false);
+        }
+      }
+    },
+    controlLines: { get: function () { return controlLines; }, set: function (_) { controlLines = _; } },
+
+  });
+
+  nv.utils.initOptions(chart);
+
+  return chart;
+};
 nv.models.cumulativeLineChart = function() {
     "use strict";
 
@@ -3356,6 +3965,7 @@ nv.models.cumulativeLineChart = function() {
     var dx = d3.scale.linear()
         , index = {i: 0, x: 0}
         , renderWatch = nv.utils.renderWatch(dispatch, duration)
+        , currentYDomain
         ;
 
     var stateGetter = function(data) {
@@ -3460,36 +4070,24 @@ nv.models.cumulativeLineChart = function() {
             x = lines.xScale();
             y = lines.yScale();
 
-            if (!rescaleY) {
-                var seriesDomains = data
-                    .filter(function(series) { return !series.disabled })
-                    .map(function(series,i) {
-                        var initialDomain = d3.extent(series.values, lines.y());
-
-                        //account for series being disabled when losing 95% or more
-                        if (initialDomain[0] < -.95) initialDomain[0] = -.95;
-
-                        return [
-                                (initialDomain[0] - initialDomain[1]) / (1 + initialDomain[1]),
-                                (initialDomain[1] - initialDomain[0]) / (1 + initialDomain[0])
-                        ];
-                    });
-
-                var completeDomain = [
-                    d3.min(seriesDomains, function(d) { return d[0] }),
-                    d3.max(seriesDomains, function(d) { return d[1] })
-                ];
-
-                lines.yDomain(completeDomain);
-            } else {
-                lines.yDomain(null);
-            }
 
             dx.domain([0, data[0].values.length - 1]) //Assumes all series have same length
                 .range([0, availableWidth])
                 .clamp(true);
 
             var data = indexify(index.i, data);
+
+            // initialize the starting yDomain for the not-rescale case after indexify (to have calculated point.display)
+            if (typeof(currentYDomain) === "undefined") {
+                currentYDomain = getCurrentYDomain(data);
+            }
+
+            if (!rescaleY) {
+                lines.yDomain(currentYDomain);
+                lines.clipEdge(true);
+            } else {
+                lines.yDomain(null);
+            }
 
             // Setup containers and skeleton of chart
             var interactivePointerEvents = (useInteractiveGuideline) ? "none" : "all";
@@ -3553,7 +4151,7 @@ nv.models.cumulativeLineChart = function() {
                     .attr("transform", "translate(" + availableWidth + ",0)");
             }
 
-            // Show error if series goes below 100%
+            // Show error if index point value is 0 (division by zero avoided)
             var tempDisabled = data.filter(function(d) { return d.tempDisabled });
 
             wrap.select('.tempDisabled').remove(); //clean-up and prevent duplicates
@@ -3723,8 +4321,10 @@ nv.models.cumulativeLineChart = function() {
             controls.dispatch.on('legendClick', function(d,i) {
                 d.disabled = !d.disabled;
                 rescaleY = !d.disabled;
-
                 state.rescaleY = rescaleY;
+                if (!rescaleY) {
+                    currentYDomain = getCurrentYDomain(data); // rescale is turned off, so set the currentYDomain
+                }
                 dispatch.stateChange(state);
                 chart.update();
             });
@@ -3743,7 +4343,7 @@ nv.models.cumulativeLineChart = function() {
                 data
                     .filter(function(series, i) {
                         series.seriesIndex = i;
-                        return !series.disabled;
+                        return !(series.disabled || series.tempDisabled);
                     })
                     .forEach(function(series,i) {
                         pointIndex = nv.interactiveBisect(series.values, e.pointXValue, chart.x());
@@ -3858,10 +4458,8 @@ nv.models.cumulativeLineChart = function() {
             }
             var v = indexifyYGetter(indexValue, idx);
 
-            //TODO: implement check below, and disable series if series loses 100% or more cause divide by 0 issue
-            if (v < -.95 && !noErrorCheck) {
-                //if a series loses more than 100%, calculations fail.. anything close can cause major distortion (but is mathematically correct till it hits 100)
-
+            // avoid divide by zero
+            if (Math.abs(v) < 0.00001 && !noErrorCheck) {
                 line.tempDisabled = true;
                 return line;
             }
@@ -3869,12 +4467,25 @@ nv.models.cumulativeLineChart = function() {
             line.tempDisabled = false;
 
             line.values = line.values.map(function(point, pointIndex) {
-                point.display = {'y': (indexifyYGetter(point, pointIndex) - v) / (1 + v) };
+                point.display = {'y': (indexifyYGetter(point, pointIndex) - v) / v };
                 return point;
             });
 
             return line;
         })
+    }
+
+    function getCurrentYDomain(data) {
+        var seriesDomains = data
+            .filter(function(series) { return !(series.disabled || series.tempDisabled)})
+            .map(function(series,i) {
+                return d3.extent(series.values, function (d) { return d.display.y });
+            });
+
+        return [
+            d3.min(seriesDomains, function(d) { return d[0] }),
+            d3.max(seriesDomains, function(d) { return d[1] })
+        ];
     }
 
     //============================================================
@@ -3898,7 +4509,6 @@ nv.models.cumulativeLineChart = function() {
         // simple options, just get/set the necessary values
         width:      {get: function(){return width;}, set: function(_){width=_;}},
         height:     {get: function(){return height;}, set: function(_){height=_;}},
-        rescaleY:     {get: function(){return rescaleY;}, set: function(_){rescaleY=_;}},
         showControls:     {get: function(){return showControls;}, set: function(_){showControls=_;}},
         showLegend: {get: function(){return showLegend;}, set: function(_){showLegend=_;}},
         average: {get: function(){return average;}, set: function(_){average=_;}},
@@ -3909,6 +4519,10 @@ nv.models.cumulativeLineChart = function() {
         noErrorCheck:    {get: function(){return noErrorCheck;}, set: function(_){noErrorCheck=_;}},
 
         // options that require extra logic in the setter
+        rescaleY:     {get: function(){return rescaleY;}, set: function(_){
+            rescaleY = _;
+            chart.state.rescaleY = _; // also update state
+        }},
         margin: {get: function(){return margin;}, set: function(_){
             if (_.top !== undefined) {
                 margin.top = _.top;
@@ -5478,7 +6092,711 @@ nv.models.furiousLegend = function() {
 
     return chart;
 };
-//TODO: consider deprecating and using multibar with single series for this
+nv.models.goalChart = function () {
+  "use strict";
+
+  //============================================================
+  // Public Variables with Default Settings
+  //------------------------------------------------------------
+
+  var margin = { top: 30, right: 20, bottom: 50, left: 60 },
+      color = nv.utils.defaultColor(),
+      width = null,
+      height = null,
+      showLegend = true,
+      noData = null,
+      yDomain1,
+      yDomain2,
+      getX = function (d) { return d.x },
+      getY = function (d) { return d.y },
+      interpolate = 'monotone',
+      useVoronoi = true,
+      interactiveLayer = nv.interactiveGuideline(),
+      useInteractiveGuideline = false,
+      legendRightAxisHint = ' (right axis)'
+       , goalLine = function (d) { return d.goalLine; }
+       , systemTargetLine = function (d) { return d.systemTargetLine; }
+  ;
+
+  //============================================================
+  // Private Variables
+  //------------------------------------------------------------
+  var x = d3.scale.linear(),
+      yScale1 = d3.scale.linear(),
+      yScale2 = d3.scale.linear(),
+
+      lines1 = nv.models.line().yScale(yScale1),
+      lines2 = nv.models.line().yScale(yScale2),
+
+      xAxis = nv.models.axis().scale(x).orient('bottom').tickPadding(5),
+      yAxis1 = nv.models.axis().scale(yScale1).orient('left'),
+      yAxis2 = nv.models.axis().scale(yScale2).orient('right'),
+
+      legend = nv.models.legend().height(30),
+      tooltip = nv.models.tooltip(),
+      dispatch = d3.dispatch();
+
+  var charts = [lines1, lines2];
+
+  function chart(selection) {
+    selection.each(function (data) {
+      var container = d3.select(this),
+          that = this;
+      nv.utils.initSVG(container);
+
+      chart.update = function () { container.transition().call(chart); };
+      chart.container = this;
+
+      var availableWidth = nv.utils.availableWidth(width, container, margin),
+          availableHeight = nv.utils.availableHeight(height, container, margin);
+
+      var dataLines1 = data.filter(function (d) { return d.type == 'line' && d.yAxis == 1 });
+      var dataLines2 = data.filter(function (d) { return d.type == 'line' && d.yAxis == 2 });
+
+      // Display noData message if there's nothing to show.
+      if (!data || !data.length || !data.filter(function (d) { return d.values.length }).length) {
+        nv.utils.noData(chart, container);
+        return chart;
+      } else {
+        container.selectAll('.nv-noData').remove();
+      }
+
+      var series1 = data.filter(function (d) { return !d.disabled && d.yAxis == 1 })
+          .map(function (d) {
+            return d.values.map(function (d, i) {
+              return { x: getX(d), y: getY(d) }
+            })
+          });
+
+      var series2 = data.filter(function (d) { return !d.disabled && d.yAxis == 2 })
+          .map(function (d) {
+            return d.values.map(function (d, i) {
+              return { x: getX(d), y: getY(d) }
+            })
+          });
+
+      x.domain(d3.extent(d3.merge(series1.concat(series2)), function (d) { return getX(d) }))
+          .range([0, availableWidth]);
+
+      var wrap = container.selectAll('g.wrap.multiChart').data([data]);
+      var gEnter = wrap.enter().append('g').attr('class', 'wrap nvd3 multiChart').append('g');
+
+      gEnter.append('g').attr('class', 'nv-x nv-axis');
+      gEnter.append('g').attr('class', 'nv-y1 nv-axis');
+      gEnter.append('g').attr('class', 'nv-y2 nv-axis');
+      gEnter.append('g').attr('class', 'lines1Wrap');
+      gEnter.append('g').attr('class', 'lines2Wrap');
+      gEnter.append('g').attr('class', 'goals1Wrap');
+      gEnter.append('g').attr('class', 'goals2Wrap');
+      gEnter.append('g').attr('class', 'systemTarget1Wrap');
+      gEnter.append('g').attr('class', 'systemTarget2Wrap');
+      gEnter.append('g').attr('class', 'legendWrap');
+      gEnter.append('g').attr('class', 'nv-interactive');
+
+      var g = wrap.select('g');
+
+      var color_array = data.map(function (d, i) {
+        return data[i].color || color(d, i);
+      });
+      var legendColorArray = _.concat([], '#00A859', '#E7C447');
+      if (showLegend) {
+        var legendWidth = legend.align() ? availableWidth / 2 : availableWidth;
+        var legendXPosition = legend.align() ? legendWidth : 0;
+
+        legend.width(legendWidth);
+        legend.color(legendColorArray);
+        legend.updateState(false);
+        var legendData = data.map(function(series) {
+          series.originalKey = series.originalKey === undefined ? series.key : series.originalKey;
+          series.key = series.originalKey + (series.yAxis == 1 ? '' : legendRightAxisHint);
+          return series;
+        });
+        legendData.push({
+          key: 'User Goal',
+        });
+        if(data[0].systemTarget !== null ){
+          legendData.push({
+          key: 'SystemTarget',
+        });}
+        g.select('.legendWrap')
+            .datum(legendData)
+            .call(legend);
+
+        if (margin.top != legend.height()) {
+          margin.top = legend.height();
+          availableHeight = nv.utils.availableHeight(height, container, margin);
+        }
+
+        g.select('.legendWrap')
+            .attr('transform', 'translate(' + legendXPosition + ',' + (-margin.top) + ')');
+      }
+
+      lines1
+          .width(availableWidth)
+          .height(availableHeight)
+          .interpolate(interpolate)
+          .color(color_array.filter(function (d, i) { return !data[i].disabled && data[i].yAxis == 1 && data[i].type == 'line' }));
+      lines2
+          .width(availableWidth)
+          .height(availableHeight)
+          .interpolate(interpolate)
+          .color(color_array.filter(function (d, i) { return !data[i].disabled && data[i].yAxis == 2 && data[i].type == 'line' }));
+      g.attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+      var lines1Wrap = g.select('.lines1Wrap')
+          .datum(dataLines1.filter(function (d) { return !d.disabled }));
+      var lines2Wrap = g.select('.lines2Wrap')
+          .datum(dataLines2.filter(function (d) { return !d.disabled }));
+ 
+      //var extraValue1 = dataStack1.length ? dataStack1.map(function (a) { return a.values }).reduce(function (a, b) {
+      //  return a.map(function (aVal, i) { return { x: aVal.x, y: aVal.y + b[i].y } })
+      //}).concat([{ x: 0, y: 0 }]) : [];
+      //var extraValue2 = dataStack2.length ? dataStack2.map(function (a) { return a.values }).reduce(function (a, b) {
+      //  return a.map(function (aVal, i) { return { x: aVal.x, y: aVal.y + b[i].y } })
+      //}).concat([{ x: 0, y: 0 }]) : [];
+
+      var goals1 = dataLines1.filter(function(data) {
+        return !data.disabled;
+      }).map(function(a) {
+        return a.goal
+      });
+      var extraValue1 = goals1.length ? [
+      {
+        x: 0,
+        y: Math.min.apply(null, goals1)
+      }, {
+        x: 0,
+        y: Math.max.apply(null, goals1)
+      }] : [];
+
+      var systemTargets1 = dataLines1.filter(function (data) {
+        return !data.disabled;
+      }).map(function (a) {
+        return a.systemTarget
+      });
+      var extraValue3 = systemTargets1.length ? [
+      {
+        x: 0,
+        y: Math.min.apply(null, systemTargets1)
+      }, {
+        x: 0,
+        y: Math.max.apply(null, systemTargets1)
+      }] : [];
+
+      var goals2 = dataLines2.filter(function (data) {
+        return !data.disabled;
+      }).map(function (a) {
+        return a.goal
+      });
+      var extraValue2 = goals2.length ? [
+      {
+        x: 0,
+        y: Math.min.apply(null, goals2)
+      }, {
+        x: 0,
+        y: Math.max.apply(null, goals2)
+      }] : [];
+
+      var systemTargets2 = dataLines2.filter(function (data) {
+        return !data.disabled;
+      }).map(function (a) {
+        return a.systemTarget
+      });
+      var extraValue4 = systemTargets2.length ? [
+      {
+        x: 0,
+        y: Math.min.apply(null, systemTargets2)
+      }, {
+        x: 0,
+        y: Math.max.apply(null, systemTargets2)
+      }] : [];
+      yScale1.domain(yDomain1 || d3.extent(d3.merge(series1).concat(extraValue1).concat(extraValue3), function (d) { return d.y }))
+          .range([0, availableHeight]);
+
+      yScale2.domain(yDomain2 || d3.extent(d3.merge(series2).concat(extraValue2).concat(extraValue4), function (d) { return d.y }))
+          .range([0, availableHeight]);
+
+      lines1.yDomain(yScale1.domain());
+
+      lines2.yDomain(yScale2.domain());
+
+      if (dataLines1.length) { d3.transition(lines1Wrap).call(lines1); }
+      if (dataLines2.length) { d3.transition(lines2Wrap).call(lines2); }
+
+      var goalLineData1 = data.filter(function (d) {
+        return !d.disabled  && (d.yAxis===1);
+      });
+
+      var goalLines1 = g.select(".goals1Wrap").selectAll("line")
+          .data(goalLineData1, function (d) { return d.key; });
+
+      //updateYAxis();
+      var getGoalLineY1 = function (d) {
+        //If average lines go off the svg element, clamp them to the svg bounds.
+        var yVal = yScale1(d.goal);
+        if (yVal < 0) return 0;
+        if (yVal > availableHeight) return availableHeight;
+        return yVal;
+      };
+
+      goalLines1.enter()
+        .append('line')
+        .style('stroke-width', 2)
+        .style('stroke-dasharray', '10,10')
+        .style('stroke', '#00A859')
+        .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getGoalLineY1)
+          .attr('y2', getGoalLineY1);
+      goalLines1
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getGoalLineY1)
+          .attr('y2', getGoalLineY1);
+      goalLines1.exit().remove();
+
+      //var goalLines1Labels = g.select(".goals1Wrap").selectAll("text")
+      //  .data(goalLineData1, function (d) { return d.key; });
+
+      //goalLines1Labels.enter()
+      //  .append('text')
+      //  .attr('x', availableWidth)
+      //  .attr('y', getGoalLineY1)
+      //  .text(function (d) {
+      //    return d.line;
+      // });
+      //goalLines1Labels
+      //  .attr('x', availableWidth)
+      //  .attr('y', getGoalLineY1)
+      //  .text(function (d) {
+      //    return 'User Goal';
+      //  });
+      //goalLines1Labels.exit().remove();
+
+      var goalLineData2 = data.filter(function (d) {
+        return !d.disabled && !!goalLine(d) && (d.yAxis === 2);
+      });
+
+      var goalLines2 = g.select(".goals2Wrap").selectAll("line")
+          .data(goalLineData2, function (d) { return d.key; });
+
+      //updateYAxis();
+      var getGoalLineY2 = function (d) {
+        //If average lines go off the svg element, clamp them to the svg bounds.
+        var yVal = yScale2(d.goal);
+        if (yVal < 0) return 0;
+        if (yVal > availableHeight) return availableHeight;
+        return yVal;
+      };
+
+      goalLines2.enter()
+          .append('line')
+          .style('stroke-width', 2)
+          .style('stroke-dasharray', '10,10')
+          .style('stroke', '#00A859')
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getGoalLineY2)
+          .attr('y2', getGoalLineY2);
+      goalLines2
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getGoalLineY2)
+          .attr('y2', getGoalLineY2);
+      goalLines2.exit().remove();
+
+      var systemTargetLineData1 = data.filter(function (d) {
+        return !d.disabled &&  (d.systemTarget !== null) && (d.yAxis === 1);
+      });
+
+      var systemTargetLines1 = g.select(".systemTarget1Wrap").selectAll("line")
+          .data(systemTargetLineData1, function (d) { return d.key; });
+
+      //updateYAxis();
+      var getSystemTargetLineY1 = function (d) {
+        //If average lines go off the svg element, clamp them to the svg bounds.
+        var yVal = yScale1(d.systemTarget);
+        if (yVal < 0) return 0;
+        if (yVal > availableHeight) return availableHeight;
+        return yVal;
+      };
+
+      systemTargetLines1.enter()
+        .append('line')
+        .style('stroke-width', 1)
+        .style('stroke-dasharray', '5,5')
+        .style('stroke', '#E7C447')
+        .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getSystemTargetLineY1)
+          .attr('y2', getSystemTargetLineY1);
+      systemTargetLines1
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getSystemTargetLineY1)
+          .attr('y2', getSystemTargetLineY1);
+      systemTargetLines1.exit().remove();
+
+      //var systemTarget1Labels = g.select(".systemTarget1Wrap").selectAll("text")
+      //  .data(systemTargetLineData1, function (d) { return d.key; });
+
+      //systemTarget1Labels.enter()
+      //  .append('text')
+      //  .attr('x', availableWidth)
+      //  .attr('y', getSystemTargetLineY1)
+      //  .text(function (d) {
+      //    return d.line;
+      //  });
+      //systemTarget1Labels
+      //  .attr('x', availableWidth)
+      //  .attr('y', getSystemTargetLineY1)
+      //  .text(function (d) {
+      //    return 'System Target';
+      //  });
+      //systemTarget1Labels.exit().remove();
+
+      var systemTargetLineData2 = data.filter(function (d) {
+        return !d.disabled && !!systemTargetLine(d) && (d.yAxis === 2);
+      });
+
+      var systemTargetLines2 = g.select(".systemTarget2Wrap").selectAll("line")
+          .data(systemTargetLineData2, function (d) { return d.key; });
+
+      //updateYAxis();
+      var getSystemTargetLineY2 = function (d) {
+        //If average lines go off the svg element, clamp them to the svg bounds.
+        var yVal = yScale2(d.systemTarget);
+        if (yVal < 0) return 0;
+        if (yVal > availableHeight) return availableHeight;
+        return yVal;
+      };
+
+      systemTargetLines2.enter()
+        .append('line')
+        .style('stroke-width', 1)
+        .style('stroke-dasharray', '5,5')
+         .style('stroke', '#E7C447')
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getSystemTargetLineY2)
+          .attr('y2', getSystemTargetLineY2);
+      systemTargetLines2
+          .attr('x1', 0)
+          .attr('x2', availableWidth)
+          .attr('y1', getSystemTargetLineY2)
+          .attr('y2', getSystemTargetLineY2);
+      systemTargetLines2.exit().remove();
+
+      //var systemTarget2Labels = g.select(".systemTarget2Wrap").selectAll("text")
+      //  .data(systemTargetLineData2, function (d) { return d.key; });
+
+      //systemTarget2Labels.enter()
+      //  .append('text')
+      //  .attr('x', availableWidth)
+      //  .attr('y', getSystemTargetLineY2)
+      //  .text(function (d) {
+      //    return d.line;
+      //  });
+      //systemTarget2Labels
+      //  .attr('x', availableWidth)
+      //  .attr('y', getSystemTargetLineY1)
+      //  .text(function (d) {
+      //    return 'System Target';
+      //  });
+      //systemTarget2Labels.exit().remove();
+
+      xAxis
+          ._ticks(nv.utils.calcTicksX(availableWidth / 100, data))
+          .tickSize(-availableHeight, 0);
+
+      g.select('.nv-x.nv-axis')
+          .attr('transform', 'translate(0,' + availableHeight + ')');
+      d3.transition(g.select('.nv-x.nv-axis'))
+          .call(xAxis);
+
+      yAxis1
+          ._ticks(nv.utils.calcTicksY(availableHeight / 36, data))
+          .tickSize(-availableWidth, 0);
+
+
+      d3.transition(g.select('.nv-y1.nv-axis'))
+          .call(yAxis1);
+
+      yAxis2
+          ._ticks(nv.utils.calcTicksY(availableHeight / 36, data))
+          .tickSize(-availableWidth, 0);
+
+      d3.transition(g.select('.nv-y2.nv-axis'))
+          .call(yAxis2);
+
+      g.select('.nv-y1.nv-axis')
+          .classed('nv-disabled', series1.length ? false : true)
+          .attr('transform', 'translate(' + x.range()[0] + ',0)');
+
+      g.select('.nv-y2.nv-axis')
+          .classed('nv-disabled', series2.length ? false : true)
+          .attr('transform', 'translate(' + x.range()[1] + ',0)');
+
+      legend.dispatch.on('stateChange', function (newState) {
+        chart.update();
+      });
+
+      if (useInteractiveGuideline) {
+        interactiveLayer
+            .width(availableWidth)
+            .height(availableHeight)
+            .margin({ left: margin.left, top: margin.top })
+            .svgContainer(container)
+            .xScale(x);
+        wrap.select(".nv-interactive").call(interactiveLayer);
+      }
+
+      //============================================================
+      // Event Handling/Dispatching
+      //------------------------------------------------------------
+
+      function mouseover_line(evt) {
+        var yaxis = data[evt.seriesIndex].yAxis === 2 ? yAxis2 : yAxis1;
+        evt.value = evt.point.x;
+        evt.series = {
+          value: evt.point.y,
+          color: evt.point.color,
+          key: evt.series.key
+        };
+        tooltip
+            .duration(0)
+            .valueFormatter(function (d, i) {
+              return yaxis.tickFormat()(d, i);
+            })
+            .data(evt)
+            .hidden(false);
+      }
+
+      function mouseover_scatter(evt) {
+        var yaxis = data[evt.seriesIndex].yAxis === 2 ? yAxis2 : yAxis1;
+        evt.value = evt.point.x;
+        evt.series = {
+          value: evt.point.y,
+          color: evt.point.color,
+          key: evt.series.key
+        };
+        tooltip
+            .duration(100)
+            .valueFormatter(function (d, i) {
+              return yaxis.tickFormat()(d, i);
+            })
+            .data(evt)
+            .hidden(false);
+      }
+
+      function mouseover_stack(evt) {
+        var yaxis = data[evt.seriesIndex].yAxis === 2 ? yAxis2 : yAxis1;
+        evt.point['x'] = stack1.x()(evt.point);
+        evt.point['y'] = stack1.y()(evt.point);
+        tooltip
+            .duration(0)
+            .valueFormatter(function (d, i) {
+              return yaxis.tickFormat()(d, i);
+            })
+            .data(evt)
+            .hidden(false);
+      }
+
+      function mouseover_bar(evt) {
+        var yaxis = data[evt.data.series].yAxis === 2 ? yAxis2 : yAxis1;
+
+        evt.value = bars1.x()(evt.data);
+        evt['series'] = {
+          value: bars1.y()(evt.data),
+          color: evt.color,
+          key: evt.data.key
+        };
+        tooltip
+            .duration(0)
+            .valueFormatter(function (d, i) {
+              return yaxis.tickFormat()(d, i);
+            })
+            .data(evt)
+            .hidden(false);
+      }
+
+
+
+      function clearHighlights() {
+        for (var i = 0, il = charts.length; i < il; i++) {
+          var chart = charts[i];
+          try {
+            chart.clearHighlights();
+          } catch (e) { }
+        }
+      }
+
+      function highlightPoint(serieIndex, pointIndex, b) {
+        for (var i = 0, il = charts.length; i < il; i++) {
+          var chart = charts[i];
+          try {
+            chart.highlightPoint(serieIndex, pointIndex, b);
+          } catch (e) { }
+        }
+      }
+
+      if (useInteractiveGuideline) {
+        interactiveLayer.dispatch.on('elementMousemove', function (e) {
+          clearHighlights();
+          var singlePoint, pointIndex, pointXLocation, allData = [];
+          data
+          .filter(function (series, i) {
+            series.seriesIndex = i;
+            return !series.disabled;
+          })
+          .forEach(function (series, i) {
+            var extent = x.domain();
+            var currentValues = series.values.filter(function (d, i) {
+              return chart.x()(d, i) >= extent[0] && chart.x()(d, i) <= extent[1];
+            });
+
+            pointIndex = nv.interactiveBisect(currentValues, e.pointXValue, chart.x());
+            var point = currentValues[pointIndex];
+            var pointYValue = chart.y()(point, pointIndex);
+            if (pointYValue !== null) {
+              highlightPoint(i, pointIndex, true);
+            }
+            if (point === undefined) return;
+            if (singlePoint === undefined) singlePoint = point;
+            if (pointXLocation === undefined) pointXLocation = x(chart.x()(point, pointIndex));
+            allData.push({
+              key: series.key,
+              value: pointYValue,
+              color: color(series, series.seriesIndex),
+              data: point,
+              yAxis: series.yAxis == 2 ? yAxis2 : yAxis1,
+              goal: series.goal,
+              systemTarget:series.systemTarget
+            });
+          });
+
+          interactiveLayer.tooltip
+          .chartContainer(chart.container.parentNode)
+          .valueFormatter(function (d, i) {
+            var yAxis = allData[i].yAxis;
+            return d === null ? "N/A" : allData[i].yAxis.tickFormat()(d) +
+              ' (Goal ' + allData[i].yAxis.tickFormat()(allData[i].goal)  +
+           ((allData[i].systemTarget !== null)?', System Target ' + allData[i].yAxis.tickFormat()(allData[i].systemTarget):'') +
+              ')';
+          }).headerFormatter(function (d, i) {
+            return xAxis.tickFormat()(d, i);
+          })
+          .data({
+            value: chart.x()(singlePoint, pointIndex),
+            index: pointIndex,
+            series: allData
+          })();
+
+          interactiveLayer.renderGuideLine(pointXLocation);
+        });
+
+        interactiveLayer.dispatch.on("elementMouseout", function (e) {
+          clearHighlights();
+        });
+      } else {
+        lines1.dispatch.on('elementMouseover.tooltip', mouseover_line);
+        lines2.dispatch.on('elementMouseover.tooltip', mouseover_line);
+        lines1.dispatch.on('elementMouseout.tooltip', function (evt) {
+          tooltip.hidden(true)
+        });
+        lines2.dispatch.on('elementMouseout.tooltip', function (evt) {
+          tooltip.hidden(true)
+        });
+
+      }
+    });
+
+    return chart;
+  }
+
+  //============================================================
+  // Global getters and setters
+  //------------------------------------------------------------
+
+  chart.dispatch = dispatch;
+  chart.legend = legend;
+  chart.lines1 = lines1;
+  chart.lines2 = lines2;
+  chart.xAxis = xAxis;
+  chart.yAxis1 = yAxis1;
+  chart.yAxis2 = yAxis2;
+  chart.tooltip = tooltip;
+  chart.interactiveLayer = interactiveLayer;
+
+  chart.options = nv.utils.optionsFunc.bind(chart);
+
+  chart._options = Object.create({}, {
+    // simple options, just get/set the necessary values
+    width: { get: function () { return width; }, set: function (_) { width = _; } },
+    height: { get: function () { return height; }, set: function (_) { height = _; } },
+    showLegend: { get: function () { return showLegend; }, set: function (_) { showLegend = _; } },
+    yDomain1: { get: function () { return yDomain1; }, set: function (_) { yDomain1 = _; } },
+    yDomain2: { get: function () { return yDomain2; }, set: function (_) { yDomain2 = _; } },
+    noData: { get: function () { return noData; }, set: function (_) { noData = _; } },
+    interpolate: { get: function () { return interpolate; }, set: function (_) { interpolate = _; } },
+    legendRightAxisHint: { get: function () { return legendRightAxisHint; }, set: function (_) { legendRightAxisHint = _; } },
+
+    // options that require extra logic in the setter
+    margin: {
+      get: function () { return margin; }, set: function (_) {
+        margin.top = _.top !== undefined ? _.top : margin.top;
+        margin.right = _.right !== undefined ? _.right : margin.right;
+        margin.bottom = _.bottom !== undefined ? _.bottom : margin.bottom;
+        margin.left = _.left !== undefined ? _.left : margin.left;
+      }
+    },
+    color: {
+      get: function () { return color; }, set: function (_) {
+        color = nv.utils.getColor(_);
+      }
+    },
+    x: {
+      get: function () { return getX; }, set: function (_) {
+        getX = _;
+        lines1.x(_);
+        lines2.x(_);
+      }
+    },
+    y: {
+      get: function () { return getY; }, set: function (_) {
+        getY = _;
+        lines1.y(_);
+        lines2.y(_);
+      }
+    },
+    useVoronoi: {
+      get: function () { return useVoronoi; }, set: function (_) {
+        useVoronoi = _;
+        lines1.useVoronoi(_);
+        lines2.useVoronoi(_);
+      }
+    },
+
+    useInteractiveGuideline: {
+      get: function () { return useInteractiveGuideline; }, set: function (_) {
+        useInteractiveGuideline = _;
+        if (useInteractiveGuideline) {
+          lines1.interactive(false);
+          lines1.useVoronoi(false);
+          lines2.interactive(false);
+          lines2.useVoronoi(false);
+        }
+      }
+    },
+    goalLine: { get: function () { return goalLine; }, set: function (_) { goalLine = _; } },
+    systemTargetLine: { get: function () { return systemTargetLine; }, set: function (_) { systemTargetLine = _; } },
+
+  });
+
+  nv.utils.initOptions(chart);
+
+  return chart;
+};//TODO: consider deprecating and using multibar with single series for this
 nv.models.historicalBar = function() {
     "use strict";
 
@@ -6768,7 +8086,7 @@ nv.models.lineChart = function() {
         , state = nv.utils.state()
         , defaultState = null
         , noData = null
-        , dispatch = d3.dispatch('tooltipShow', 'tooltipHide', 'stateChange', 'changeState', 'renderEnd')
+        , dispatch = d3.dispatch('stateChange', 'changeState', 'renderEnd')
         , duration = 250
         ;
 
@@ -9131,13 +10449,13 @@ nv.models.multiBarHorizontal = function() {
                         var xerr = getYerr(d,i)
                             , mid = 0.8 * x.rangeBand() / ((stacked ? 1 : data.length) * 2);
                         xerr = xerr.length ? xerr : [-Math.abs(xerr), Math.abs(xerr)];
-                        xerr = xerr.map(function(e) { return y(e) - y(0); });
+                        xerr = xerr.map(function(e) { return y(e + ((getY(d,i) < 0) ? 0 : getY(d,i))) - y(0); });
                         var a = [[xerr[0],-mid], [xerr[0],mid], [xerr[0],0], [xerr[1],0], [xerr[1],-mid], [xerr[1],mid]];
                         return a.map(function (path) { return path.join(',') }).join(' ');
                     })
                     .attr('transform', function(d,i) {
                         var mid = x.rangeBand() / ((stacked ? 1 : data.length) * 2);
-                        return 'translate(' + (getY(d,i) < 0 ? 0 : y(getY(d,i)) - y(0)) + ', ' + mid + ')'
+                        return 'translate(0, ' + mid + ')';
                     });
             }
 
@@ -9899,8 +11217,12 @@ nv.models.multiChart = function() {
                 if (extraValue1BarStacked.length > 0)
                     extraValue1BarStacked = extraValue1BarStacked.reduce(function(a,b){
                         return a.map(function(aVal,i){return {x: aVal.x, y: aVal.y + b[i].y}})
-                    }).concat([{x:0, y:0}]);
+                    });
             }
+            if (dataBars1.length) {
+                extraValue1BarStacked.push({x:0, y:0});
+            }
+            
             var extraValue2BarStacked = [];
             if (bars2.stacked() && dataBars2.length) {
                 var extraValue2BarStacked = dataBars2.filter(function(d){return !d.disabled}).map(function(a){return a.values});
@@ -9908,7 +11230,10 @@ nv.models.multiChart = function() {
                 if (extraValue2BarStacked.length > 0)
                     extraValue2BarStacked = extraValue2BarStacked.reduce(function(a,b){
                         return a.map(function(aVal,i){return {x: aVal.x, y: aVal.y + b[i].y}})
-                    }).concat([{x:0, y:0}]);
+                    });
+            }
+            if (dataBars2.length) {
+                extraValue2BarStacked.push({x:0, y:0});
             }
             
             yScale1 .domain(yDomain1 || d3.extent(d3.merge(series1).concat(extraValue1BarStacked), function(d) { return d.y } ))
@@ -11336,6 +12661,7 @@ nv.models.pie = function() {
         , labelsOutside = false
         , labelType = "key"
         , labelThreshold = .02 //if slice percentage is under this, don't show label
+        , hideOverlapLabels = false //Hide labels that don't fit in slice
         , donut = false
         , title = false
         , growOnHover = true
@@ -11657,6 +12983,44 @@ nv.models.pie = function() {
                         return label;
                     })
                 ;
+
+                if (hideOverlapLabels) {
+                    pieLabels
+                        .each(function (d, i) {
+                            if (!this.getBBox) return;
+                            var bb = this.getBBox(),
+                            center = labelsArc[i].centroid(d);
+                            var topLeft = {
+                              x : center[0] + bb.x,
+                              y : center[1] + bb.y
+                            };
+
+                            var topRight = {
+                              x : topLeft.x + bb.width,
+                              y : topLeft.y
+                            };
+
+                            var bottomLeft = {
+                              x : topLeft.x,
+                              y : topLeft.y + bb.height
+                            };
+
+                            var bottomRight = {
+                              x : topLeft.x + bb.width,
+                              y : topLeft.y + bb.height
+                            };
+
+                            d.visible = nv.utils.pointIsInArc(topLeft, d, arc) &&
+                            nv.utils.pointIsInArc(topRight, d, arc) &&
+                            nv.utils.pointIsInArc(bottomLeft, d, arc) &&
+                            nv.utils.pointIsInArc(bottomRight, d, arc);
+                        })
+                        .style('display', function (d) {
+                            return d.visible ? null : 'none';
+                        })
+                    ;
+                }
+
             }
 
 
@@ -11698,6 +13062,7 @@ nv.models.pie = function() {
         title:      {get: function(){return title;}, set: function(_){title=_;}},
         titleOffset:    {get: function(){return titleOffset;}, set: function(_){titleOffset=_;}},
         labelThreshold: {get: function(){return labelThreshold;}, set: function(_){labelThreshold=_;}},
+        hideOverlapLabels: {get: function(){return hideOverlapLabels;}, set: function(_){hideOverlapLabels=_;}},
         valueFormat:    {get: function(){return valueFormat;}, set: function(_){valueFormat=_;}},
         x:          {get: function(){return getX;}, set: function(_){getX=_;}},
         id:         {get: function(){return id;}, set: function(_){id=_;}},
@@ -12708,7 +14073,7 @@ nv.models.scatter = function() {
             });
 
             // Setup Scales
-            var logScale = chart.yScale().name === d3.scale.log().name ? true : false;
+            var logScale = (typeof(chart.yScale().base) === "function"); // Only log scale has a method "base()"
             // remap and flatten the data for use in calculating the scales' domains
             var seriesData = (xDomain && yDomain && sizeDomain) ? [] : // if we know xDomain and yDomain and sizeDomain, no need to calculate.... if Size is constant remember to set sizeDomain to speed up performance
                 d3.merge(
@@ -14781,7 +16146,7 @@ nv.models.stackedAreaChart = function() {
 
             interactiveLayer.dispatch.on('elementMousemove', function(e) {
                 stacked.clearHighlights();
-                var singlePoint, pointIndex, pointXLocation, allData = [], valueSum = 0, allNullValues = true;
+                var singlePoint, pointIndex, pointXLocation, allData = [], valueSum = 0, allNullValues = true, atleastOnePoint = false;
                 data
                     .filter(function(series, i) {
                         series.seriesIndex = i;
@@ -14793,6 +16158,7 @@ nv.models.stackedAreaChart = function() {
                         var pointYValue = chart.y()(point, pointIndex);
                         if (pointYValue != null && pointYValue > 0) {
                             stacked.highlightPoint(i, pointIndex, true);
+                            atleastOnePoint = true;
                         }
                     
                         // Draw at least one point if all values are zero.

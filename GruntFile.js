@@ -145,7 +145,9 @@ module.exports = function(grunt) {
                         'src/models/linePlus*',
                         'src/models/ohlcBar.js',
                         'src/models/candlestickBar.js',
-                        'src/models/multiChart.js'
+                        'src/models/multiChart.js',
+                        'src/models/goalChart.js',
+                        'src/models/controlChart.js'
                     ]
                 }
             }
