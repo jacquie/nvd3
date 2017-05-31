@@ -87,6 +87,11 @@ module.exports = function(grunt) {
                 files: [
                     { src: 'src/nv.d3.css', dest: 'build/nv.d3.css' }
                 ]
+            },
+            types:{
+               files: [
+                    { src: 'src/types/index.d.ts', dest: 'build/index.d.ts' }
+                ] 
             }
         },
         postcss: {

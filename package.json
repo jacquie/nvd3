@@ -1,16 +1,17 @@
 {
   "name": "nvd3plus",
-  "version": "1.8.5-dev",
+  "version": "1.8.6-dev",
   "description": "A reusable charting library written in d3.js",
   "url": "https://github.com/jacquie/nvd3",
   "main": "build/nv.d3.js",
+  "types" : "build/index.d.ts",
   "scripts": {
     "test": "grunt",
     "build": "grunt"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/jacquie/nvd3"
+    "url": "https://github.com/jacquie/nvd3.git"
   },
   "keywords": [
     "nvd3",
@@ -18,7 +19,6 @@
     "chart",
     "graph"
   ],
-  "readmeFilename": "README.md",
   "license": "Apache-2.0",
   "peerDependencies": {
     "d3": "^3.4.4"
@@ -47,5 +47,15 @@
     "karma-sinon-chai": "^0.2.0",
     "karma-spec-reporter": "0.0.13",
     "mocha": "^1.21.4"
-  }
+  },
+  "bugs": {
+    "url": "https://github.com/jacquie/nvd3/issues"
+  },
+  "homepage": "https://github.com/jacquie/nvd3#readme",
+  "directories": {
+    "example": "examples",
+    "test": "test"
+  },
+  "dependencies": {},
+  "author": "Novus plus Jacquie Howard"
 }
