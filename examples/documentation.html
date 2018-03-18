@@ -69,6 +69,7 @@
                 'ohlcBarChart',
                 'boxPlotChart',
                 'sunburstChart',
+                'distroPlotChart',
                 'candlestickBarChart'
             ].sort();
             var parts = [
@@ -1002,7 +1003,178 @@ as well as used to print out examples using those example inputs.
             desc: "For focus: Toggle whether to constantly dispatch onBrush event when zooming or just when zoom end",
             default: true,
             examples: [true, false]
-        }
+        },
+		maxBoxWidth: {
+            desc: "limits the maximum box width (in pixels)",
+            default: "Don't limit width",
+            examples: [50]
+        },
+		plotType: {
+            desc: "Specify the rendered plot type, choices are 'box', 'violin' or false/null in which case only scatter points will be drawn",
+            default: false,
+            examples: ['box','violin']
+        },
+		observationType: {
+            desc: "Specify how to position scatter points along the x-axis; choices are 'random', 'swarm', 'line', 'centered' or false. A value of false hides all observations. Note that d3-beeswarm (https://github.com/Kcnarf/d3-beeswarm) library must be loaded for 'swarm' to work.",
+            default: 'random',
+            examples: ['random','swarm','line','centered']
+        },
+		whiskerDef: {
+            desc: "Method for calculating whisker length; choices are 'iqr', 'minmax', or 'stddev'. The type 'iqr' is the traditional way of drawing whiskers for boxplots and is defined as the lowest datum still within 1.5 IQR of the lower quartile, and the highest datum still within 1.5 IQR of the upper quartile. The type 'minmax' is simply the min or max observation within the group, and 'stddev' is 1 standard deviation from the mean. Note that changing the central tendency value (mean or median) does not change the location of any whisker type.",
+            default: 'iqr',
+            examples: ['iqr','minmax','stddev']
+        },
+		notchBox: {
+            desc: "Specifying this option as True will generate the boxplots with notches; notches are drawn as 95% confidence intervals around either the mean or median (central tendency +- 1.57 * IQR / n^0.5). If the notches of two plots do not overlap this is ‘strong evidence’ that the two medians differ (Chambers et al., 1983, p. 62). Note that adjusting the central tendency option will adjust the position of the notch.",
+            default: false,
+            examples: [true, false]
+        },
+		hideWhiskers: {
+            desc: "Whether to show or hide whisers when rendering with the box plotType",
+            default: false,
+            examples: [true, false]
+        },
+		colorGroup: {
+            desc: "If specified, this accessor function specifies the attribute to use within the data to group distrubtions along the x-axis.",
+            default: "false",
+            examples: [
+                function(d){
+                    return d.group;
+                }
+            ]
+        },
+		centralTendency: {
+            desc: "The type of central tendency to show for the distribution, this tendency will be drawn as a horizontal line; choices are 'mean', 'median' or false",
+            default: false,
+            examples: ['mean','median',false]
+        },
+		bandwidth: {
+            desc: "Heuristic for the KDE bandwidth calculation, can be float or str, if str, must be one of 'scott' or 'silverman'",
+            default: "scott",
+            examples: ["scott", "silverman"]
+        },
+		resolution: {
+            desc: "Resolution to use in kde calculation",
+            default: 50,
+            examples: [0.1, 20]
+        },
+		showOnlyOutliers: {
+            desc: "Whether to show only outliers in box plot - if false, all observations will be shown instead of just the outliers",
+            default: true,
+            examples: [true, false]
+        },
+		jitter: {
+            desc: "Float value representing the percentage of box width that should be used for the random orientation of observations",
+            default: 0.7,
+            examples: [0.2, 1]
+        },
+		clampViolin: {
+            desc: "Will limit the violin range within the range of observed data.",
+            default: true,
+        },
+		squash: {
+            desc: "Whether to squash boxes/violins together along the x-axi in the case where option colorGroup is specified. This removes the empty space beteween distributions in cases where the particular grouping data does not exist.",
+            default: true,
+            examples: [true, false]
+        },
+        cellAspectRatio: {
+            desc: "By default, cell sizes are automatically calculated to fit the screen width & height; by specifying this option, the height of cells will be calculated as cellWidth / cellAspectRatio, where cellWidth is maximized to fit the width of the screen.",
+            default: false,
+            examples: [1.0],
+        },
+        cellRadius: {
+            desc: "Sets the 'rx' and 'ry' attritubes of the cell to give it rounded corners",
+            default: 2,
+            examples: [0],
+        },
+        cellBorderWidth: {
+            desc: "Sets the border width around cells, in pixels",
+            default: 4,
+            examples: [0],
+        },
+        cellValue: {
+            desc: "Accessor function for setting identifying the key in the data used to set the cell value.",
+            default: function(d) { d.value; },
+            examples: function(d) { d.cellVal; },
+        },
+        cellValueFormat: {
+            desc: "Formatter for displayed cell value.",
+            default: "d3.format(',.0f')",
+        },
+        colorRange: {
+            desc: "Set the color range for cells",
+            default: '["#a50026","#d73027","#f46d43","#fdae61","#fee090","#ffffbf","#e0f3f8","#abd9e9","#74add1","#4575b4","#313695"]',
+            examples: [['#d01c8b','#f1b6da','#f7f7f7','#b8e186','#4dac26']]
+        },
+        colorDomain: {
+            desc: "Set the color domain for cells; will otherwise be set automatically as either the cell value extend [if the cell values are numeric] or all cell values [if the cell values are categorical]",
+        },
+        colorScale: {
+            desc: "Override the default scale type for cell colors; will otherwise be set automatically as either d3.scale.quantize() [if cell values are numeric] or d3.scale.ordinal() [if cell values are categorical]",
+        },
+        highContrastText: {
+            desc: "Automatically set the cell label color in such a way to maximize contrast against the background color.",
+            default: true,
+            examples: [false],
+        },
+        metaOffset: {
+            desc: "Space between the metadata rectangles and the heatmap",
+            default: 5,
+            examples: [0],
+        },
+        missingDataColor: {
+            desc: "Cell color to give to those cells that have missing data; missing data occurrs either if it is not specified, or cannot be calculated due to normalization.",
+            default: '#bcbcbc',
+            examples: ['#fff'] 
+        },
+        missingDataLabel: {
+            desc: "Cell label to give to those cells with missing data.",
+            default: 'NaN',
+            examples: [""],
+        },
+        normalize: {
+            desc: "Normalization to apply to cells, must be one of either: 'centerRow', 'robustCenterRow', 'centerScaleRow', 'robustCenterScaleRow', 'centerColumn', 'robustCenterColumn', 'centerScaleColumn', 'robustCenterScaleColumn', 'centerAll', 'robustCenterAll', 'centerScaleAll', 'robustCenterScaleAll'.",
+            refs: ["http://www.arrayserver.com/wiki/index.php?title=Heatmap_normalization"],
+            default: false,
+            examples: ['centerScaleColumn']
+        },
+        showCellValues: {
+            desc: "Whether to show the cell values/labels",
+            default: true,
+            examples: [false]
+        },
+        xMeta: {
+            desc: "Accessor function to specify which key in the data should be used to display column metadata. This data will be represented as color squares positioned along with the x-axis.",
+            default: false,
+            examples: [function(d) { return d.group; }]
+        },
+        xMetaColorScale: {
+            desc: "Color scale to use for column metadata.",
+            default: "nv.utils.defaultColor()",
+        },
+        xMetaHeight: {
+            desc: "Function used to set the height of the column metadata rectangles",
+            default: "function(d) { return cellHeight / 3}",
+            examples: [5]
+        },
+        yMeta: {
+            desc: "Accessor function to specify which key in the data should be used to display row metadata. This data will be represented as color squares positioned along with the y-axis.",
+            default: false,
+            examples: [function(d) { return d.group; }]
+        },
+        yMetaColorScale: {
+            desc: "Color scale to use for row metadata.",
+            default: "nv.utils.defaultColor()",
+        },
+        yMetaWidth: {
+            desc: "Function used to set the width of the column metadata rectangles",
+            default: "function(d) { return cellWidth / 3}",
+            examples: [5]
+        },
+        showGrid {
+            desc: "Whether to show the grid lines surrounding cells.",
+            default: "false",
+        },
     };
 </script>
 
