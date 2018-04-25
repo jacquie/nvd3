@@ -4,7 +4,7 @@
   "description": "A reusable charting library written in d3.js",
   "url": "https://github.com/jacquie/nvd3",
   "main": "build/nv.d3.js",
-  "types" : "build/index.d.ts",
+  "types": "build/index.d.ts",
   "scripts": {
     "test": "grunt",
     "build": "grunt"
@@ -57,7 +57,9 @@
     "example": "examples",
     "test": "test"
   },
-  "dependencies": {},
+  "dependencies": {
+    "d3": "^3.5.17",
+    "sinon": "^1.17.7"
+  },
   "author": "Novus plus Jacquie Howard"
-  }
-  
+}
